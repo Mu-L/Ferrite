@@ -1,28 +1,57 @@
 # Ferrite Roadmap
 
-## Known Bugs 🐛
+## Known Issues 🐛
 
-### Low Priority
-- [ ] **Multi-cursor incomplete** - Basic cursor rendering works, but text operations not implemented (deferred to v0.3.0)
+### Blocked by egui TextEdit
+These issues cannot be fixed without replacing egui's built-in text editor:
+- [ ] **Multi-cursor incomplete** - Basic cursor rendering works, but text operations not implemented
+- [ ] **Code folding incomplete** - Detection works, but text hiding not possible
+- [ ] **Scroll sync imperfect** - Limited access to egui's internal scroll state
 
 ---
 
 ## Planned Features 🚀
 
-### v0.3.0 (Planned)
-- [ ] **Code folding text hiding** - Actually hide collapsed regions (requires custom text editor integration)
-- [ ] **Full multi-cursor editing** - Complete multi-cursor support with text operations (requires custom text editor)
-- [ ] **Scroll sync perfection** - Further improve scroll synchronization accuracy between Raw and Rendered modes
-- [ ] **Split view scroll sync** - Synchronized scrolling between raw editor and preview panes in split view
-- [ ] **Split view preview editing** - Make edits in split view preview persist back to original content
-- [ ] **Split view read-only indicator** - Visual indicator in preview pane that edits don't persist
-- [ ] **Mermaid diagram optimization** - Performance improvements, subgraph support, advanced syntax features
-- [ ] **Mermaid error recovery** - Show partial diagram on parse errors instead of failing completely
-- [ ] **Search multi-line match tests** - Add test coverage for multi-line search result navigation
+### v0.3.0 (Planned) - Custom Editor + Modular Architecture
 
-### Future
+> **Status:** Collecting v0.2.0 feedback before implementation  
+> **Docs:** [Custom Editor Plan](docs/technical/custom-editor-widget-plan.md) | [Modular Refactor Plan](docs/refactor.md)
+
+v0.3.0 is a foundational release with two major architectural changes:
+
+#### 1. Custom Editor Widget
+Replace egui's `TextEdit` with a custom `FerriteEditor` widget to unblock advanced editing features.
+
+- [ ] **FerriteEditor widget** - Custom text editor using egui drawing primitives
+- [ ] **Rope-based buffer** - Efficient text storage via `ropey` crate
+- [ ] **Full input handling** - Direct keyboard/mouse event processing
+- [ ] **Full multi-cursor editing** - Text operations at all cursor positions
+- [ ] **Code folding with text hiding** - Actually collapse regions visually
+- [ ] **Perfect scroll sync** - Direct line-to-pixel mapping access
+
+#### 2. Modular Architecture Refactor
+Transform Ferrite from monolithic to "Core + Features" using Rust's compile-time feature flags.
+
+- [ ] **Feature-gated dependencies** - `markdown`, `json`, `yaml`, `syntax_highlighting`, `git` as optional
+- [ ] **DocumentView enum** - Type-safe file handling with `#[cfg(feature)]` variants
+- [ ] **Feature switchboard** - Central file-type detection with graceful fallback to plain text
+- [ ] **Directory restructure** - Move specialized code to `src/features/` module
+
+**Benefits:**
+- Compile minimal builds (`cargo build --no-default-features`)
+- Faster dev cycles (disable unused features)
+- Smaller binaries for users who don't need all formats
+- Future WASM compatibility
+
+#### Additional v0.3.0 Goals
+- [ ] **Split view preview editing** - Make edits in preview persist
+- [ ] **Mermaid improvements** - Performance, subgraph support, error recovery
+
+### Future (v0.4.0+)
 - [ ] Spell checking
 - [ ] Custom themes (import/export)
+- [ ] Virtual/ghost text (AI completions, etc.)
+- [ ] Column/box selection
 
 ---
 

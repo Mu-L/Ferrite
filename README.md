@@ -9,9 +9,13 @@ A fast, lightweight text editor for Markdown, JSON, YAML, and TOML files. Built 
 
 ## Screenshots
 
-| Raw Editor (Dark Theme) | Rendered View (Dark Theme) |
-|-------------------------|----------------------------|
+| Raw Editor | Rendered View |
+|------------|---------------|
 | ![Raw Editor](assets/screenshots/raw-dark.png) | ![Rendered View](assets/screenshots/rendered-dark.png) |
+
+| Split View | Zen Mode |
+|------------|----------|
+| ![Split View](assets/screenshots/split-dark.png) | ![Zen Mode](assets/screenshots/zen-dark.png) |
 
 ## Features
 

@@ -70,6 +70,7 @@ A fast, lightweight text editor for Markdown, JSON, and more. Built with Rust an
 | [Mermaid Diagrams](./technical/mermaid-diagrams.md) | MermaidJS code block detection, diagram type indicators, styled rendering |
 | [Editor Minimap](./technical/minimap.md) | VS Code-style minimap navigation, click-to-navigate, search highlights, split view support |
 | [Branding](./branding.md) | Icon design, asset generation, platform integration guidelines |
+| **[Custom Editor Widget Plan](./technical/custom-editor-widget-plan.md)** | **v0.3.0 planning: Replace egui TextEdit with custom FerriteEditor widget** |
 
 ---
 
