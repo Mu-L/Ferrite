@@ -22,10 +22,10 @@ use crate::export::{copy_html_to_clipboard, generate_html_document};
 use crate::files::dialogs::{open_multiple_files_dialog, save_file_dialog};
 use crate::fonts;
 use crate::markdown::{
-    apply_raw_format, delimiter_display_name, delimiter_symbol, detect_raw_formatting_state,
-    get_structured_file_type, get_tabular_file_type, insert_or_update_toc, CsvViewer,
-    CsvViewerState, EditorMode, FormattingState, MarkdownEditor, MarkdownFormatCommand,
-    TocOptions, TreeViewer, TreeViewerState, DELIMITERS,
+    apply_raw_format, cleanup_rendered_editor_memory, delimiter_display_name, delimiter_symbol,
+    detect_raw_formatting_state, get_structured_file_type, get_tabular_file_type,
+    insert_or_update_toc, CsvViewer, CsvViewerState, EditorMode, FormattingState, MarkdownEditor,
+    MarkdownFormatCommand, TocOptions, TreeViewer, TreeViewerState, DELIMITERS,
 };
 // Note: SyncScrollState is available for future split-view sync scrolling
 #[allow(unused_imports)]
@@ -83,10 +83,6 @@ enum KeyboardAction {
     ToggleViewMode,
     /// Cycle theme (Ctrl+Shift+T)
     CycleTheme,
-    /// Undo (Ctrl+Z)
-    Undo,
-    /// Redo (Ctrl+Y or Ctrl+Shift+Z)
-    Redo,
     /// Open settings panel (Ctrl+,)
     OpenSettings,
     /// Open find panel (Ctrl+F)
@@ -131,10 +127,6 @@ enum KeyboardAction {
     GoToLine,
     /// Duplicate current line or selection (Ctrl+Shift+D)
     DuplicateLine,
-    /// Move line(s) up (Alt+Up)
-    MoveLineUp,
-    /// Move line(s) down (Alt+Down)
-    MoveLineDown,
     /// Insert/Update Table of Contents (Ctrl+Shift+U)
     InsertToc,
 }
@@ -235,6 +227,12 @@ pub struct FerriteApp {
     pending_auto_save_recovery: Option<AutoSaveRecoveryInfo>,
     /// Snippet manager for text expansion
     snippet_manager: SnippetManager,
+    /// Frame counter for FPS tracking (diagnostic for repaint optimization)
+    #[cfg(debug_assertions)]
+    frame_count: u64,
+    /// Last time we logged FPS (diagnostic for repaint optimization)
+    #[cfg(debug_assertions)]
+    last_fps_log: std::time::Instant,
 }
 
 impl FerriteApp {
@@ -251,8 +249,9 @@ impl FerriteApp {
         // Create lock file to detect crashes on next startup
         create_lock_file();
 
-        // Set up custom fonts with proper bold/italic variants
-        fonts::setup_fonts(&cc.egui_ctx);
+        // Set up custom fonts with lazy CJK loading for faster startup
+        // CJK fonts will be loaded on-demand when CJK text is detected
+        fonts::setup_fonts_lazy(&cc.egui_ctx);
 
         // Set snappy/instant animations (default is ~83ms, we want instant)
         let mut style = (*cc.egui_ctx.style()).clone();
@@ -267,8 +266,8 @@ impl FerriteApp {
         let mut state = AppState::new();
 
         // If we have a valid session to restore (but no crash with unsaved changes),
-        // restore it silently
-        if !needs_recovery_dialog && recovery_result.session.is_some() {
+        // restore it silently - but only if restore_session is enabled in settings
+        if !needs_recovery_dialog && recovery_result.session.is_some() && state.settings.restore_session {
             if state.restore_from_session_result(&recovery_result) {
                 info!("Session restored successfully");
             }
@@ -360,6 +359,10 @@ impl FerriteApp {
             pending_recovery,
             pending_auto_save_recovery: None,
             snippet_manager,
+            #[cfg(debug_assertions)]
+            frame_count: 0,
+            #[cfg(debug_assertions)]
+            last_fps_log: std::time::Instant::now(),
         };
 
         // Restore CSV delimiter overrides from session if available
@@ -439,7 +442,11 @@ impl FerriteApp {
                 if let Some(tab) = self.state.active_tab() {
                     if tab.path.is_none() && tab.content.is_empty() {
                         // Remove the empty default tab since we're opening specific files
+                        let tab_id = tab.id;
                         self.state.close_tab(0);
+                        // No ctx available here during startup, skip egui cleanup
+                        // (empty tab has no temp data anyway)
+                        self.cleanup_tab_state(tab_id, None);
                     }
                 }
             }
@@ -478,6 +485,30 @@ impl FerriteApp {
     /// Get elapsed time since app start in seconds.
     fn get_app_time(&self) -> f64 {
         self.start_time.elapsed().as_secs_f64()
+    }
+
+    /// Load CJK fonts on-demand for specific text content.
+    ///
+    /// This enables lazy CJK font loading - only the fonts needed for the detected
+    /// scripts are loaded:
+    /// - Korean text → loads only Korean font (~15-20MB)
+    /// - Japanese text → loads only Japanese font (~15-20MB)
+    /// - Chinese text → loads only Chinese font based on preference (~15-20MB)
+    ///
+    /// This is much more memory efficient than loading all CJK fonts at once.
+    fn load_cjk_fonts_for_content(&self, ctx: &egui::Context, content: &str) {
+        let custom_font = self
+            .state
+            .settings
+            .font_family
+            .custom_name()
+            .map(|s| s.to_string());
+        fonts::load_cjk_for_text(
+            content,
+            ctx,
+            custom_font.as_deref(),
+            self.state.settings.cjk_font_preference,
+        );
     }
 
     /// Update window size in settings if changed.
@@ -640,6 +671,32 @@ impl FerriteApp {
                     );
                 }
             }
+        }
+    }
+
+    /// Clean up viewer state HashMap entries and egui temporary data when a tab is closed.
+    ///
+    /// This prevents memory leaks by removing entries for closed tabs from:
+    /// - `tree_viewer_states` (JSON/YAML/TOML tree view state)
+    /// - `csv_viewer_states` (CSV/TSV viewer state with delimiter overrides)
+    /// - `sync_scroll_states` (split-view sync scroll state)
+    /// - egui memory temp data (rendered editor widget states like FormattedItemEditState,
+    ///   CodeBlockData, MermaidBlockData, TableData, TableEditState, RenderedLinkState)
+    ///
+    /// # Parameters
+    /// - `tab_id` - The unique ID of the closed tab
+    /// - `ctx` - Optional egui Context for cleaning up egui memory. If None, only HashMap
+    ///   cleanup is performed (useful during startup when context isn't available).
+    ///
+    /// Should be called after a tab is closed, using the tab's unique ID.
+    fn cleanup_tab_state(&mut self, tab_id: usize, ctx: Option<&egui::Context>) {
+        self.tree_viewer_states.remove(&tab_id);
+        self.csv_viewer_states.remove(&tab_id);
+        self.sync_scroll_states.remove(&tab_id);
+
+        // Clean up egui temporary data for rendered editor widgets
+        if let Some(ctx) = ctx {
+            cleanup_rendered_editor_memory(ctx);
         }
     }
 
@@ -1144,8 +1201,22 @@ impl FerriteApp {
                         }
                     }
 
-                    // Fill remaining space with draggable area
-                    let drag_rect = ui.available_rect_before_wrap();
+                    // Fill remaining space with draggable area, but EXCLUDE the button area
+                    // on the right side to prevent drag response from consuming clicks
+                    // intended for window control buttons. This fixes Linux hit-testing issues.
+                    //
+                    // Button area width calculation (right-to-left):
+                    // - 4.0 spacing + Close(46) + Max(46) + Min(46) + Fullscreen(46) + 8.0 spacing
+                    // - Settings(28) + 4.0 + Zen(28) + 4.0 + ViewMode(~32) + margins
+                    // Total ~300px, use slightly more to ensure no overlap
+                    const WINDOW_BUTTON_AREA_WIDTH: f32 = 320.0;
+                    
+                    let available = ui.available_rect_before_wrap();
+                    let drag_width = (available.width() - WINDOW_BUTTON_AREA_WIDTH).max(0.0);
+                    let drag_rect = egui::Rect::from_min_size(
+                        available.min,
+                        egui::vec2(drag_width, available.height()),
+                    );
                     let drag_response = ui.allocate_rect(drag_rect, egui::Sense::click_and_drag());
 
                     // Handle double-click to maximize/restore
@@ -1459,6 +1530,7 @@ impl FerriteApp {
 
         // Track deferred actions for status bar (to avoid borrow conflicts)
         let mut toggle_rainbow_columns = false;
+        let mut pending_encoding_change: Option<&'static str> = None;
 
         // Bottom panel for status bar - hidden in Zen Mode
         if !zen_mode {
@@ -1799,11 +1871,6 @@ impl FerriteApp {
                         let (line, col) = tab.cursor_position;
                         ui.label(format!("Ln {}, Col {}", line + 1, col + 1));
 
-                        ui.separator();
-
-                        // Encoding (Rust strings are always UTF-8)
-                        ui.label("UTF-8");
-
                         // Delimiter picker for CSV/TSV files in rendered or split mode
                         if tab.view_mode == ViewMode::Rendered || tab.view_mode == ViewMode::Split {
                             if let Some(tabular_type) = tab.path.as_ref().and_then(|p| get_tabular_file_type(p)) {
@@ -1964,6 +2031,44 @@ impl FerriteApp {
 
                         ui.separator();
 
+                        // Encoding display and picker
+                        let encoding_display = tab.encoding_display_name();
+                        let encoding_popup_id = ui.make_persistent_id("encoding_picker_popup");
+                        let encoding_button_response = ui.add(
+                            egui::Button::new(&encoding_display)
+                                .frame(false)
+                                .sense(egui::Sense::click())
+                        );
+
+                        encoding_button_response.clone().on_hover_text(format!(
+                            "File encoding: {}\n{}Click to change",
+                            encoding_display,
+                            if tab.detected_encoding.is_some() { "Detected. " } else { "Default. " }
+                        ));
+
+                        if encoding_button_response.clicked() {
+                            ui.memory_mut(|mem| mem.toggle_popup(encoding_popup_id));
+                        }
+
+                        // Encoding picker popup
+                        egui::popup_below_widget(ui, encoding_popup_id, &encoding_button_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                            ui.set_min_width(150.0);
+                            ui.label(egui::RichText::new("File Encoding").strong());
+                            ui.separator();
+
+                            // Show common encodings
+                            for &enc in crate::state::Tab::COMMON_ENCODINGS {
+                                let selected = tab.current_encoding.eq_ignore_ascii_case(enc);
+                                let label = enc.to_uppercase();
+                                if ui.selectable_label(selected, label).clicked() {
+                                    pending_encoding_change = Some(enc);
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            }
+                        });
+
+                        ui.separator();
+
                         // Text statistics
                         let stats = TextStats::from_text(&tab.content);
                         ui.label(stats.format_compact());
@@ -1971,6 +2076,20 @@ impl FerriteApp {
                 });
             });
         });
+
+        // Apply deferred encoding change (outside tab borrow scope)
+        if let Some(new_encoding) = pending_encoding_change {
+            if let Some(tab) = self.state.active_tab_mut() {
+                if let Err(e) = tab.set_encoding(new_encoding) {
+                    warn!("Failed to change encoding: {}", e);
+                    let time = self.get_app_time();
+                    self.state.show_toast(format!("Failed to change encoding: {}", e), time, 3.0);
+                } else {
+                    let time = self.get_app_time();
+                    self.state.show_toast(format!("Encoding changed to {}", new_encoding.to_uppercase()), time, 2.0);
+                }
+            }
+        }
 
         // Apply deferred rainbow columns toggle (outside tab borrow scope)
         if toggle_rainbow_columns {
@@ -2433,7 +2552,12 @@ impl FerriteApp {
 
             // Handle tab close action
             if let Some(index) = tab_to_close {
+                // Get tab_id before closing for viewer state cleanup
+                let tab_id = self.state.tabs().get(index).map(|t| t.id);
                 self.state.close_tab(index);
+                if let Some(id) = tab_id {
+                    self.cleanup_tab_state(id, Some(ui.ctx()));
+                }
             }
 
             // Draw a visible separator line between tabs and editor
@@ -3386,7 +3510,7 @@ impl FerriteApp {
                     self.handle_rename_file(old, new);
                 }
                 FileOperationResult::Delete(path) => {
-                    self.handle_delete_file(path);
+                    self.handle_delete_file(path, Some(ctx));
                 }
             }
         }
@@ -4345,7 +4469,11 @@ impl FerriteApp {
     }
 
     /// Handle deleting a file or folder.
-    fn handle_delete_file(&mut self, path: std::path::PathBuf) {
+    ///
+    /// # Parameters
+    /// - `path` - Path to the file or folder to delete
+    /// - `ctx` - Optional egui Context for cleaning up tab state memory
+    fn handle_delete_file(&mut self, path: std::path::PathBuf, ctx: Option<&egui::Context>) {
         let is_dir = path.is_dir();
         let result = if is_dir {
             std::fs::remove_dir_all(&path)
@@ -4362,7 +4490,8 @@ impl FerriteApp {
                     .show_toast(format!("Deleted: {}", name), time, 2.0);
 
                 // Close any tabs with this path
-                let tabs_to_close: Vec<usize> = self
+                // Collect both index and tab_id for cleanup after closing
+                let tabs_to_close: Vec<(usize, usize)> = self
                     .state
                     .tabs()
                     .iter()
@@ -4374,12 +4503,13 @@ impl FerriteApp {
                             false
                         }
                     })
-                    .map(|(i, _)| i)
+                    .map(|(i, tab)| (i, tab.id))
                     .collect();
 
                 // Close tabs in reverse order to maintain indices
-                for &index in tabs_to_close.iter().rev() {
+                for &(index, tab_id) in tabs_to_close.iter().rev() {
                     self.state.close_tab(index);
+                    self.cleanup_tab_state(tab_id, ctx);
                 }
 
                 // Refresh file tree
@@ -4679,19 +4809,6 @@ impl FerriteApp {
     /// Check if a character is a closing bracket/quote.
     fn is_closing_bracket(ch: char) -> bool {
         matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
-    }
-
-    /// Get the opening character for a closer.
-    fn get_opening_bracket(closer: char) -> Option<char> {
-        match closer {
-            ')' => Some('('),
-            ']' => Some('['),
-            '}' => Some('{'),
-            '"' => Some('"'),
-            '\'' => Some('\''),
-            '`' => Some('`'),
-            _ => None,
-        }
     }
 
     /// Handle auto-close brackets BEFORE render.
@@ -5016,7 +5133,7 @@ impl FerriteApp {
                 self.state.new_tab();
             }
             KeyboardAction::CloseTab => {
-                self.handle_close_current_tab();
+                self.handle_close_current_tab(ctx);
             }
             KeyboardAction::NextTab => {
                 self.handle_next_tab();
@@ -5029,12 +5146,6 @@ impl FerriteApp {
             }
             KeyboardAction::CycleTheme => {
                 self.handle_cycle_theme(ctx);
-            }
-            KeyboardAction::Undo => {
-                self.handle_undo();
-            }
-            KeyboardAction::Redo => {
-                self.handle_redo();
             }
             KeyboardAction::OpenSettings => {
                 self.state.toggle_settings();
@@ -5138,10 +5249,6 @@ impl FerriteApp {
             KeyboardAction::DuplicateLine => {
                 self.handle_duplicate_line();
             }
-            // MoveLineUp/Down are handled in consume_move_line_keys() before render
-            KeyboardAction::MoveLineUp | KeyboardAction::MoveLineDown => {
-                // Should not reach here - these are consumed before render
-            }
             KeyboardAction::InsertToc => {
                 self.handle_insert_toc();
             }
@@ -5149,9 +5256,14 @@ impl FerriteApp {
     }
 
     /// Handle closing the current tab (with unsaved prompt if needed).
-    fn handle_close_current_tab(&mut self) {
+    fn handle_close_current_tab(&mut self, ctx: &egui::Context) {
         let index = self.state.active_tab_index();
+        // Get tab_id before closing for viewer state cleanup
+        let tab_id = self.state.tabs().get(index).map(|t| t.id);
         self.state.close_tab(index);
+        if let Some(id) = tab_id {
+            self.cleanup_tab_state(id, Some(ctx));
+        }
     }
 
     /// Switch to the next tab (cycles to first if at end).
@@ -6186,31 +6298,6 @@ impl FerriteApp {
         }
     }
 
-    /// Scroll the editor to a specific line (1-indexed).
-    fn scroll_to_line(&mut self, line: usize) {
-        if let Some(tab) = self.state.active_tab_mut() {
-            // Calculate character offset for the start of the line
-            let content = &tab.content;
-            let mut char_offset = 0;
-            let mut current_line = 1;
-
-            for (idx, ch) in content.chars().enumerate() {
-                if current_line == line {
-                    char_offset = idx;
-                    break;
-                }
-                if ch == '\n' {
-                    current_line += 1;
-                }
-            }
-
-            // Update cursor position to the start of the line
-            tab.cursor_position = (line.saturating_sub(1), 0);
-
-            debug!("Scrolling to line {} (char offset {})", line, char_offset);
-        }
-    }
-
     /// Navigate to a heading with text-based search and transient highlighting.
     ///
     /// This provides more precise navigation than line-based scrolling by:
@@ -6734,6 +6821,15 @@ impl FerriteApp {
                         );
                         let is_exit = self.state.ui.pending_action == Some(PendingAction::Exit);
 
+                        // Extract tab_id for cleanup if this is a CloseTab action
+                        let tab_id_to_cleanup = if let Some(PendingAction::CloseTab(index)) =
+                            self.state.ui.pending_action
+                        {
+                            self.state.tabs().get(index).map(|t| t.id)
+                        } else {
+                            None
+                        };
+
                         // "Save" button - save then proceed with action
                         if ui.button("Save").clicked() {
                             if is_tab_close {
@@ -6756,6 +6852,10 @@ impl FerriteApp {
                                         .unwrap_or(true)
                                     {
                                         self.state.handle_confirmed_action();
+                                        // Clean up viewer state after tab is closed
+                                        if let Some(id) = tab_id_to_cleanup {
+                                            self.cleanup_tab_state(id, Some(ui.ctx()));
+                                        }
                                     } else {
                                         // Save was cancelled or failed, cancel the close
                                         self.state.cancel_pending_action();
@@ -6774,6 +6874,10 @@ impl FerriteApp {
                         // "Discard" button - proceed without saving
                         if ui.button("Discard").clicked() {
                             self.state.handle_confirmed_action();
+                            // Clean up viewer state after tab is closed
+                            if let Some(id) = tab_id_to_cleanup {
+                                self.cleanup_tab_state(id, Some(ui.ctx()));
+                            }
                             if is_exit {
                                 self.should_exit = true;
                             }
@@ -6922,6 +7026,15 @@ impl eframe::App for FerriteApp {
         // Apply theme if needed (handles System theme changes)
         self.theme_manager.apply_if_needed(ctx);
 
+        // Lazy load CJK fonts when CJK content is detected (for faster startup)
+        // Only loads the specific fonts needed for detected scripts (Korean/Japanese/Chinese)
+        // This is much more memory efficient than loading all CJK fonts at once
+        if let Some(tab) = self.state.active_tab() {
+            if fonts::needs_cjk(&tab.content) {
+                self.load_cjk_fonts_for_content(ctx, &tab.content);
+            }
+        }
+
         // Update toast message (clear if expired)
         let current_time = self.get_app_time();
         self.state.update_toast(current_time);
@@ -7018,6 +7131,25 @@ impl eframe::App for FerriteApp {
         // Request exit if confirmed
         if self.should_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Frame Rate Diagnostics (Debug Only)
+        // ═══════════════════════════════════════════════════════════════════════
+        #[cfg(debug_assertions)]
+        {
+            self.frame_count += 1;
+            let elapsed = self.last_fps_log.elapsed();
+            if elapsed.as_secs() >= 5 {
+                let fps = self.frame_count as f64 / elapsed.as_secs_f64();
+                let needs_continuous = self.needs_continuous_repaint();
+                log::debug!(
+                    "[REPAINT_DEBUG] FPS: {:.1}, needs_continuous_repaint: {}, frames: {}",
+                    fps, needs_continuous, self.frame_count
+                );
+                self.frame_count = 0;
+                self.last_fps_log = std::time::Instant::now();
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════

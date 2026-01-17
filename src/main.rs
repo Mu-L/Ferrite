@@ -5,6 +5,25 @@
 //!
 //! A fast, lightweight text editor for Markdown, JSON, and more. Built with Rust and egui.
 
+// ============================================================================
+// Global Memory Allocator Configuration
+// ============================================================================
+// Use high-performance allocators to reduce heap fragmentation and memory usage.
+// - Windows: mimalloc - Microsoft's compact, fast allocator
+// - Unix (Linux/macOS): jemalloc - battle-tested allocator from Facebook/Meta
+//
+// These allocators are enabled by the "high-perf-alloc" feature (default on).
+// Disable with: cargo build --no-default-features --features bundle-icon
+// ============================================================================
+
+#[cfg(all(feature = "high-perf-alloc", target_os = "windows"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(feature = "high-perf-alloc", unix))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 // Initialize internationalization system
 // The locales directory contains YAML files for each supported language (e.g., en.yaml, zh.yaml)
 // Usage: rust_i18n::t!("menu.file.open") returns the translated string

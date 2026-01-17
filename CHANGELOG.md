@@ -5,6 +5,59 @@ All notable changes to Ferrite will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.5.1] - 2026-01-17
+
+### Added
+
+#### Multi-Encoding File Support
+- **Automatic encoding detection** - Files are now automatically detected for encoding on open using `encoding_rs` and `chardetng` crates. No more garbled text when opening legacy files.
+- **Common encoding support** - Full support for Latin-1, Windows-1252, ISO-8859-x, Shift-JIS, EUC-KR, GBK, and other common encodings beyond UTF-8.
+- **Status bar indicator** - Current file encoding displayed in status bar with click-to-change dropdown menu for manual encoding selection.
+- **Preserve encoding on save** - Files are saved back in their original encoding by default, not forced to UTF-8.
+
+#### Memory Optimization
+- **CJK font lazy loading** - CJK fonts (Korean, Japanese, Chinese) are now loaded on-demand when CJK characters are detected in documents, rather than at startup. This reduces idle memory usage from ~250MB to ~72MB for non-CJK users.
+- **Granular per-language CJK loading** - Each CJK language font is loaded independently based on detected script (Hangul → Korean font, Hiragana/Katakana → Japanese font, Han characters → user's preferred Chinese variant). Opening a Korean document only loads Korean fonts (~30MB), not all CJK fonts (~180MB).
+- **Custom memory allocators** - Platform-specific high-performance allocators: `mimalloc` on Windows, `jemalloc` on Linux/macOS. Reduces heap fragmentation and memory usage, especially for long-running sessions.
+- **Viewer state cleanup** - Fixed memory leak by cleaning up `tree_viewer_states`, `csv_viewer_states`, and `sync_scroll_states` HashMap entries when tabs are closed.
+- **egui temp data cleanup** - Stale `SyntaxHighlightCache` and per-tab temporary data cleared from egui memory on tab close.
+
+#### Cursor Positioning Improvements
+- **Galley-based click mapping** - Use egui's Galley for accurate click-to-character index conversion in rendered/split view click-to-edit.
+- **Formatting marker mapping** - Map displayed text positions to raw markdown positions accounting for `**`, `*`, `` ` ``, `~~`, and `[links](url)` syntax.
+- **Text wrapping support** - Handle wrapped lines correctly by using actual text rect width for measurement.
+- **Bold font measurement** - Use bold font for measurement when content starts with bold markers for better accuracy.
+
+#### Settings & UX
+- **Session restore option** - New setting to disable tab restoration on startup. When disabled, app starts with a single empty tab instead of restoring previous session.
+
+### Fixed
+
+#### Intel Mac CPU Usage ([#24](https://github.com/OlaProeis/Ferrite/issues/24))
+- **Removed verbose debug logging** - Eliminated `[LIST_ITEM_DEBUG]` statements in rendered mode that generated ~50,000 log lines per 22 seconds.
+- **Fixed continuous repaint in Rendered mode** - Root cause: `Sense::hover()` on scroll area content caused ~60fps repaints bypassing idle throttling. Changed to `Sense::focusable_noninteractive()` for proper ~10fps idle throttling.
+
+#### Bug Fixes
+- **New file dirty flag** - New untitled files no longer prompt to save when closed if they haven't been modified.
+- **CJK first-line indentation** - Paragraph indentation now correctly applies only to the first line, not the entire paragraph.
+- **Workspace close button alignment** - X button to close workspace panel shifted left to prevent overlap with resize handles.
+- **Linux close button** - Fixed issue where window close button couldn't be clicked due to hit-testing/overlay interference.
+
+### Technical
+- Added FPS diagnostic logging (debug builds only) for idle CPU optimization verification
+- New `CjkScriptDetection` struct and `detect_cjk_scripts()` function for granular script identification
+- Per-language `AtomicBool` flags track which CJK fonts have been loaded
+- `CjkLoadSpec` determines fonts to load based on detected scripts and user preferences
+- Platform-conditional allocator setup in `main.rs` with feature flags
+
+### Changed
+
+#### Antivirus False Positive Mitigation
+- **Adjusted release build profile** - Changed `lto` from "fat" to "thin", `opt-level` from "z" to "3", disabled symbol stripping to reduce Windows Defender false positives.
+- **Documentation** - Added "Antivirus False Positives" section to README explaining the issue and workarounds.
+
 ## [0.2.5] - 2026-01-16
 
 ### Added
@@ -296,6 +349,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **0.2.5.1** - Multi-encoding support, memory optimization (CJK lazy loading, custom allocators, leak fixes), cursor positioning improvements, Simplified Chinese, Intel Mac CPU fix, bug fixes
 - **0.2.5** - Mermaid refactor, CSV viewer, semantic minimap, i18n, CJK indentation, custom fonts, snippets, TOC generation, drag-drop images, document statistics, main menu redesign, split view editing, bug fixes
 - **0.2.3** - Editor productivity release (Go to Line, Duplicate Line, Move Line, Auto-close, Smart Paste, Line Width)
 - **0.2.2** - Stability & CLI release (CJK fonts, undo/redo fixes, CLI arguments, default view mode)
@@ -303,6 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **0.2.0** - Major feature release (Split View, Mermaid, Minimap, Git integration, and more)
 - **0.1.0** - Initial public release
 
+[0.2.5.1]: https://github.com/OlaProeis/Ferrite/compare/v0.2.5...v0.2.5.1
 [0.2.5]: https://github.com/OlaProeis/Ferrite/compare/v0.2.3...v0.2.5
 [0.2.3]: https://github.com/OlaProeis/Ferrite/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/OlaProeis/Ferrite/compare/v0.2.1...v0.2.2

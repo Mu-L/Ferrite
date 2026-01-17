@@ -15,6 +15,30 @@ A fast, lightweight text editor for Markdown, JSON, YAML, and TOML files. Built 
 
 > ⚠️ **Platform Note:** Ferrite has been primarily developed and tested on **Windows**. While it should work on Linux and macOS, these platforms have not been extensively tested. If you encounter issues, please [report them](https://github.com/OlaProeis/Ferrite/issues).
 
+<details>
+<summary><strong>🛡️ Antivirus False Positives</strong></summary>
+
+Some antivirus software (particularly Windows Defender) may flag Ferrite as suspicious. **This is a false positive.** Here's why it happens and what we've done about it:
+
+### Why This Happens
+- **Live Pipeline feature**: Ferrite's pipeline feature lets you pipe document content through shell commands (like `jq` or `grep`). This uses `cmd.exe /C` on Windows, which ML-based antivirus detection can mistake for trojan behavior.
+- **Rust compilation patterns**: Rust binaries can trigger heuristic detections due to their unique compilation characteristics.
+
+### What We've Done
+- **Reported to Microsoft**: We've submitted Ferrite to Microsoft's Security Intelligence portal as a false positive (January 2026).
+- **Adjusted build settings**: We've modified our release profile to avoid patterns that trigger ML detection (disabled symbol stripping, switched from size to speed optimization).
+- **Open source transparency**: All code is publicly auditable at [github.com/OlaProeis/Ferrite](https://github.com/OlaProeis/Ferrite).
+
+### If You're Affected
+If Windows Defender quarantines Ferrite:
+1. **Verify the source**: Only download from [official GitHub releases](https://github.com/OlaProeis/Ferrite/releases)
+2. **Add an exclusion**: Windows Security → Virus & threat protection → Exclusions → Add the Ferrite executable
+3. **Check VirusTotal**: Upload the file to [VirusTotal](https://www.virustotal.com) - legitimate Ferrite builds should show clean or near-clean results from most scanners
+
+Ferrite does **NOT** access passwords, browser data, or make network connections. The application is fully offline and only accesses files you explicitly open.
+
+</details>
+
 ## 🤖 AI-Assisted Development
 
 This project is 100% AI-generated code. All Rust code, documentation, and configuration was written by Claude (Anthropic) via [Cursor](https://cursor.com) with MCP tools.
@@ -58,13 +82,16 @@ This transparency is intentional — I want others to learn from (and improve up
 |------------|------------|----------|
 | ![Raw Editor](assets/screenshots/raw-dark.png) | ![Split View](assets/screenshots/split-dark.png) | ![Zen Mode](assets/screenshots/zen-dark.png) |
 
-> ✨ **v0.2.5 Released:** Major Mermaid improvements, semantic minimap with header labels, drag-drop images, TOC generation, snippets, document statistics, and much more. Plus: split view dual editing, keyboard shortcut customization, git auto-refresh, and numerous bug fixes. See [CHANGELOG.md](CHANGELOG.md) for full details.
+> ✨ **v0.2.5.1 Released:** Multi-encoding file support (auto-detect Latin-1, Shift-JIS, etc.), major memory optimizations (CJK lazy loading, custom allocators, leak fixes), improved cursor positioning for click-to-edit, Simplified Chinese translation, Intel Mac CPU fix, and numerous bug fixes. See [CHANGELOG.md](CHANGELOG.md) for full details.
+
+> 🔧 **v0.2.6 Coming Soon:** Large file performance (80MB+ CSV handling), code signing for Windows, and more. See [ROADMAP.md](ROADMAP.md) for details.
 
 ## Features
 
 ### Core Editing
 - **WYSIWYG Markdown Editing** - Edit markdown with live preview, click-to-edit formatting, and syntax highlighting
 - **Multi-Format Support** - Native support for Markdown, JSON, CSV, YAML, and TOML files
+- **Multi-Encoding Support** - Auto-detect and preserve file encodings (UTF-8, Latin-1, Shift-JIS, Windows-1252, GBK, and more)
 - **Tree Viewer** - Hierarchical view for JSON/YAML/TOML with inline editing, expand/collapse, and path copying
 - **Find & Replace** - Search with regex support and match highlighting
 - **Go to Line (Ctrl+G)** - Quick navigation to specific line number
